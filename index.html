@@ -1,0 +1,267 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#1A73E8">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-title" content="KARTHA">
+<title>KARTHA</title>
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="icon" href="kartha-icon.png">
+<link rel="apple-touch-icon" href="kartha-icon.png">
+<script src="config.js"></script>
+<style>
+  :root{--bg:#F4F6FB;--ink:#202124;--ink2:#5F6368;--blue:#1A73E8;--line:#E3E7EE}
+  *{box-sizing:border-box}
+  html,body{height:100%;margin:0;background:var(--bg);color:var(--ink);font:15px/1.45 Roboto,"Segoe UI",system-ui,-apple-system,sans-serif}
+  #door{min-height:100%;display:flex;flex-direction:column;align-items:center;justify-content:center;padding:24px 16px}
+  .brand{display:flex;flex-direction:column;align-items:center;gap:10px;margin-bottom:22px}
+  .brand img{width:84px;height:84px;border-radius:22px;box-shadow:0 4px 16px rgba(26,115,232,.25)}
+  .brand .n{font-size:30px;font-weight:800;letter-spacing:4px}
+  .brand .b{font-size:13px;color:var(--ink2);margin-top:-8px}
+  .card{background:#fff;border-radius:20px;box-shadow:0 2px 12px rgba(60,64,67,.12);padding:24px 20px;width:100%;max-width:380px;text-align:center}
+  .card h1{font-size:19px;margin:0 0 8px}
+  .card p{color:var(--ink2);margin:8px 0}
+  .btn{display:block;width:100%;border:0;border-radius:22px;padding:12px;font:inherit;font-weight:600;margin-top:12px;cursor:pointer;background:#E8F0FE;color:var(--blue)}
+  .btn.pri{background:var(--blue);color:#fff}
+  .pick{display:flex;flex-direction:column;gap:10px;margin-top:12px}
+  .pick button{display:flex;align-items:center;gap:12px;border:1px solid var(--line);background:#fff;border-radius:16px;padding:14px;font:inherit;font-weight:600;text-align:left;cursor:pointer}
+  .pick button span{width:36px;height:36px;border-radius:10px;background:#E8F0FE;display:flex;align-items:center;justify-content:center}
+  #gbtn{display:flex;justify-content:center;margin-top:14px;min-height:44px}
+  .small{font-size:12.5px;color:#80868B}
+  .spin{width:26px;height:26px;border:3px solid #DADCE0;border-top-color:var(--blue);border-radius:50%;animation:sp .8s linear infinite;margin:10px auto}
+  @keyframes sp{to{transform:rotate(360deg)}}
+  #frame{position:fixed;inset:0;width:100%;height:100%;border:0;background:var(--bg);display:none}
+  body.inapp #door{display:none}
+  body.inapp #frame{display:block}
+  #rec{position:fixed;inset:0;background:rgba(32,33,36,.6);display:none;align-items:flex-end;justify-content:center;z-index:10}
+  #rec.on{display:flex}
+  #rec .sheet{background:#fff;width:100%;max-width:520px;border-radius:20px 20px 0 0;padding:22px 18px calc(22px + env(safe-area-inset-bottom));text-align:center}
+  #rec .t{font-size:34px;font-weight:700;margin:6px 0}
+  #rec .dot{display:inline-block;width:12px;height:12px;border-radius:50%;background:#D93025;margin-right:6px;animation:bl 1s infinite}
+  @keyframes bl{50%{opacity:.2}}
+  .btn.red{background:#D93025;color:#fff}
+</style>
+</head>
+<body>
+<div id="door">
+  <div class="brand"><img src="kartha-icon.png" alt="K"><div class="n">KARTHA</div><div class="b">by Karthik Singirikonda</div></div>
+  <div class="card" id="card"><div class="spin"></div></div>
+</div>
+<iframe id="frame" title="Kartha" allow="clipboard-write; web-share; camera; microphone"></iframe>
+<div id="rec"><div class="sheet"><div><span class="dot"></span><b>Recording</b></div><div class="t" id="recT">0:00</div>
+  <p class="small" id="recHint">Too noisy? Step away or type.</p>
+  <button class="btn red" id="recStop">■ Stop and send</button><button class="btn" id="recCancel">Cancel</button></div></div>
+
+<script>
+(function () {
+  const CFG = window.KARTHA_CONFIG || {};
+  const ls = {
+    get: k => { try { return localStorage.getItem(k); } catch (e) { return null; } },
+    set: (k, v) => { try { localStorage.setItem(k, v); } catch (e) {} },
+    del: k => { try { localStorage.removeItem(k); } catch (e) {} }
+  };
+  const card = document.getElementById('card');
+  const frame = document.getElementById('frame');
+  const esc = s => String(s == null ? '' : s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+  const MOBILE = !!((navigator.userAgentData && navigator.userAgentData.mobile) || /Android|iPhone|iPad|iPod|Mobile|Silk|Kindle/i.test(navigator.userAgent));
+
+  /* a hidden ID for this phone, kept on the phone */
+  let device = ls.get('kartha.device');
+  if (!device || device.length < 16) {
+    device = 'd' + (crypto.randomUUID ? crypto.randomUUID().replace(/-/g, '') : (Date.now().toString(36) + Math.random().toString(36).slice(2) + Math.random().toString(36).slice(2)));
+    ls.set('kartha.device', device);
+  }
+  const params = new URLSearchParams(location.search);
+  if (params.get('invite')) { try { sessionStorage.setItem('kartha.invite', params.get('invite')); } catch (e) {} history.replaceState(null, '', location.pathname); }
+  const invite = () => { try { return sessionStorage.getItem('kartha.invite') || ''; } catch (e) { return ''; } };
+
+  let idToken = '', current = null, adminUrl = '';
+
+  function show(html){ document.body.classList.remove('inapp'); card.innerHTML = html; }
+  function busy(){ show('<div class="spin"></div>'); }
+
+  function router(body){
+    return fetch(CFG.routerUrl, { method: 'POST', headers: { 'Content-Type': 'text/plain;charset=utf-8' }, body: JSON.stringify(body) })
+      .then(r => r.json());
+  }
+  function route(extra){
+    busy();
+    const body = Object.assign({ action: 'route', deviceId: device, mobile: MOBILE, invite: invite() }, extra || {});
+    if (!body.idToken) { const s = ls.get('kartha.session'); if (s) body.session = s; }
+    return router(body).then(handle).catch(() => show(`<h1>No connection</h1><p>Check the internet and try again.</p><button class="btn pri" id="again">Try again</button>`, bind('again', () => route())));
+  }
+  function bind(id, fn){ setTimeout(() => { const b = document.getElementById(id); if (b) b.onclick = fn; }, 0); }
+
+  function handle(r){
+    switch (r.status) {
+      case 'ok':
+        ls.set('kartha.session', r.session);
+        try { sessionStorage.removeItem('kartha.invite'); } catch (e) {}
+        adminUrl = r.admin ? r.admin.url : '';
+        if (current) {                                         // reopen the same copy after a refresh of the sign-in
+          const same = current.clientId === 'ADMIN' ? r.admin : r.choices.find(c => c.clientId === current.clientId);
+          if (same) return openApp(Object.assign({}, current, { url: same.url }), r.choices);
+        }
+        if (r.admin) return openApp({ clientId: 'ADMIN', url: r.admin.url, name: 'Kartha Admin' }, r.choices);
+        if (r.choices.length === 1) return openApp(r.choices[0], r.choices);
+        if (r.choices.length > 1) return picker(r.choices);
+        return show(`<h1>Almost there</h1><p>${r.note ? 'Request sent: ' + esc(r.note.label) + '. ' : ''}You can open Kartha once your company admin approves you.</p>
+          <button class="btn pri" id="again">Check again</button>`, bind('again', () => route()));
+      case 'takeover':
+        return show(`<h1>📲 This account is active on another phone.</h1><p>Use it here instead? The other phone will be signed out.</p>
+          <button class="btn pri" id="yes">Yes, use it here</button><button class="btn" id="no">No</button>`,
+          bind('yes', () => route(idToken ? { idToken, takeover: true } : { takeover: true })), bind('no', () => show('<h1>OK</h1><p>Kartha stays on your other phone.</p>')));
+      case 'replaced':
+        ls.del('kartha.session');
+        return signIn('This account is now active on another phone. Sign in to use it here.');
+      case 'requested':
+        return show(`<h1>✅ Request sent</h1><p><b>${esc(r.label)}</b></p><p>You can open Kartha once your company admin approves you.</p>
+          <button class="btn pri" id="again">Check again</button>`, bind('again', () => route(idToken ? { idToken } : {})));
+      case 'setup':
+        return show(`<h1>⏳ Your access is being set up by your company. Please wait.</h1><button class="btn pri" id="again">Check again</button>`,
+          bind('again', () => route(idToken ? { idToken } : {})));
+      case 'waiting':
+        return show(`<h1>⏳ Waiting for approval</h1><p>Your request is with your company admin.</p><button class="btn pri" id="again">Check again</button>`,
+          bind('again', () => route(idToken ? { idToken } : {})));
+      case 'noaccess':
+        ls.del('kartha.session');
+        return show(`<h1>No access yet</h1><p>Ask your company admin for an invite link, then open it on this phone.</p>
+          <p class="small">Signed in as ${esc(r.email || '')}</p><button class="btn" id="other">Use another Google account</button>`, bind('other', () => signIn()));
+      case 'badinvite':
+        try { sessionStorage.removeItem('kartha.invite'); } catch (e) {}
+        return show(`<h1>This invite link has stopped working</h1><p>Ask your company admin for a new one.</p>`);
+      case 'desktop':
+        ls.del('kartha.session');
+        return desktop();
+      case 'signin':
+        ls.del('kartha.session');
+        return signIn();
+      default:
+        return show(`<h1>Something went wrong</h1><p>${esc(r.message || 'Please try again.')}</p><button class="btn pri" id="again">Try again</button>`, bind('again', () => route()));
+    }
+  }
+
+  function picker(choices){
+    show(`<h1>Open</h1><div class="pick">${choices.map((c, i) => `<button data-i="${i}"><span>🏢</span>Kartha – ${esc(c.name)}</button>`).join('')}</div>`);
+    card.querySelector('.pick').onclick = e => { const b = e.target.closest('[data-i]'); if (b) openApp(choices[Number(b.dataset.i)], choices); };
+  }
+  function openApp(choice, all){
+    current = choice;
+    document.title = choice.clientId === 'ADMIN' ? 'KARTHA' : 'Kartha – ' + choice.name;
+    frame.src = choice.url;
+    document.body.classList.add('inapp');
+  }
+
+  /* Google sign-in (Gmail) */
+  function loadGis(cb){
+    if (window.google && google.accounts && google.accounts.id) return cb();
+    const s = document.createElement('script');
+    s.src = 'https://accounts.google.com/gsi/client'; s.async = true; s.onload = cb;
+    s.onerror = () => show('<h1>No connection</h1><p>Check the internet and reopen Kartha.</p>');
+    document.head.appendChild(s);
+  }
+  function signIn(note){
+    if (!CFG.routerUrl || !CFG.googleClientId) return show('<h1>Kartha is not set up yet</h1><p>Please try again later.</p>');
+    show(`<h1>Sign in</h1><p>${esc(note || (invite() ? 'Sign in with your Gmail to send your request.' : 'Sign in with your Gmail.'))}</p><div id="gbtn"></div>`);
+    loadGis(() => {
+      google.accounts.id.initialize({ client_id: CFG.googleClientId, auto_select: true, cancel_on_tap_outside: false,
+        callback: r => { idToken = r.credential; route({ idToken }); } });
+      google.accounts.id.renderButton(document.getElementById('gbtn'), { theme: 'outline', size: 'large', shape: 'pill', text: 'signin_with' });
+      google.accounts.id.prompt();
+    });
+  }
+  function desktop(){
+    show('<h1>📱 Kartha works on the mobile app.</h1><p>Open Kartha on your phone.</p>' + (location.hash === '#me' ? '<div id="gbtn"></div>' : ''));
+    if (location.hash === '#me' && CFG.googleClientId) {
+      loadGis(() => {
+        google.accounts.id.initialize({ client_id: CFG.googleClientId, callback: r => { idToken = r.credential; route({ idToken }); } });
+        google.accounts.id.renderButton(document.getElementById('gbtn'), { theme: 'outline', size: 'large', shape: 'pill' });
+      });
+    }
+  }
+
+  /* messages from the app inside: share, download, reopen, admin */
+  const fromApp = o => /\.googleusercontent\.com$/.test(new URL(o).hostname) || /(^|\.)script\.google\.com$/.test(new URL(o).hostname);
+  window.addEventListener('message', e => {
+    const m = e.data;
+    if (!m || !m.kartha) return;
+    try { if (!fromApp(e.origin)) return; } catch (x) { return; }
+    if (m.type === 'hello') return e.source.postMessage({ karthaHost: 1 }, e.origin);
+    if (m.type === 'share') return share(m);
+    if (m.type === 'download' && m.file) return save(m.file);
+    if (m.type === 'record') return record(e.source, e.origin, m);
+    if (m.type === 'reauth') return route();
+    if (m.type === 'signin') { ls.del('kartha.session'); return signIn(); }
+    if (m.type === 'admin') { return adminUrl ? openApp({ clientId: 'ADMIN', url: adminUrl, name: 'Kartha Admin' }) : route(); }
+    if (m.type === 'go' && typeof m.url === 'string' && m.url.indexOf('https://script.google.com/macros/s/') === 0) {
+      return openApp({ clientId: m.clientId || 'CLIENT', url: m.url, name: m.name || 'Kartha' });
+    }
+  });
+  /* The KARTHA recorder: used when the phone does not allow the microphone inside the app itself. */
+  function record(src, origin, m){
+    const reply = r => src.postMessage({ karthaRecorded: r }, origin);
+    if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia || typeof MediaRecorder === 'undefined') return reply({ error: 'nomic' });
+    navigator.mediaDevices.getUserMedia({ audio: true }).then(stream => {
+      const mime = MediaRecorder.isTypeSupported('audio/webm;codecs=opus') ? 'audio/webm;codecs=opus' : '';
+      const rec = new MediaRecorder(stream, mime ? { mimeType: mime } : undefined);
+      const chunks = [], t0 = Date.now(), max = Math.min(120, Number(m.max) || 60);
+      let cancelled = false;
+      const box = document.getElementById('rec'), tEl = document.getElementById('recT');
+      if (m.hint) document.getElementById('recHint').textContent = m.hint;
+      box.classList.add('on');
+      const timer = setInterval(() => {
+        const sec = (Date.now() - t0) / 1000;
+        tEl.textContent = Math.floor(sec / 60) + ':' + String(Math.floor(sec % 60)).padStart(2, '0');
+        if (sec >= max) rec.stop();
+      }, 250);
+      rec.ondataavailable = e => { if (e.data.size) chunks.push(e.data); };
+      rec.onstop = () => {
+        clearInterval(timer); box.classList.remove('on'); stream.getTracks().forEach(t => t.stop());
+        if (cancelled) return reply({ error: 'cancel' });
+        const blob = new Blob(chunks, { type: (rec.mimeType || 'audio/webm').split(';')[0] });
+        const fr = new FileReader();
+        fr.onload = () => reply({ b64: String(fr.result).split(',')[1], mime: blob.type, sec: (Date.now() - t0) / 1000 });
+        fr.readAsDataURL(blob);
+      };
+      document.getElementById('recStop').onclick = () => rec.stop();
+      document.getElementById('recCancel').onclick = () => { cancelled = true; rec.stop(); };
+      rec.start();
+    }).catch(() => reply({ error: 'nomic' }));
+  }
+
+  function blobOf(f){
+    const bin = atob(f.b64), arr = new Uint8Array(bin.length);
+    for (let i = 0; i < bin.length; i++) arr[i] = bin.charCodeAt(i);
+    return new Blob([arr], { type: f.mime || 'application/octet-stream' });
+  }
+  function share(m){
+    try {
+      if (m.file && m.file.b64) {
+        const f = new File([blobOf(m.file)], m.file.name || 'file', { type: m.file.mime });
+        if (navigator.canShare && navigator.canShare({ files: [f] })) return navigator.share({ files: [f], text: m.text || '' }).catch(() => {});
+        return save(m.file);
+      }
+      if (navigator.share) return navigator.share({ text: m.text || '' }).catch(() => {});
+    } catch (e) {}
+    window.open('https://wa.me/?text=' + encodeURIComponent(m.text || ''), '_blank');
+  }
+  function save(f){
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(blobOf(f)); a.download = f.name || 'file';
+    document.body.appendChild(a); a.click(); a.remove();
+  }
+
+  if ('serviceWorker' in navigator) navigator.serviceWorker.register('sw.js').catch(() => {});
+
+  /* start */
+  if (!CFG.routerUrl) show('<h1>Kartha is not set up yet</h1><p>Please try again later.</p>');
+  else if (ls.get('kartha.session')) route();
+  else if (!MOBILE) desktop();
+  else signIn();
+})();
+</script>
+</body>
+</html>

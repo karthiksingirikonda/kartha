@@ -1,0 +1,8 @@
+[{
+  "relation": ["delegate_permission/common.handle_all_urls"],
+  "target": {
+    "namespace": "android_app",
+    "package_name": "com.karthiks.teamapp",
+    "sha256_cert_fingerprints": ["PASTE_THE_SIGNING_KEY_FINGERPRINT_WHEN_THE_ANDROID_APP_IS_BUILT"]
+  }
+}]
