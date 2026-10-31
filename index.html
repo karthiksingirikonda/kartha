@@ -43,6 +43,13 @@
   #rec .dot{display:inline-block;width:12px;height:12px;border-radius:50%;background:#D93025;margin-right:6px;animation:bl 1s infinite}
   @keyframes bl{50%{opacity:.2}}
   .btn.red{background:#D93025;color:#fff}
+  #nb{position:fixed;left:12px;right:12px;bottom:calc(76px + env(safe-area-inset-bottom));background:#fff;border-radius:18px;box-shadow:0 6px 24px rgba(60,64,67,.3);
+    padding:16px;z-index:9;display:none;max-width:500px;margin:0 auto}
+  #nb.on{display:block}
+  #nb b{display:block;font-size:16px;margin-bottom:4px}
+  #nb p{margin:0 0 10px;color:var(--ink2);font-size:14px}
+  #nb .row{display:flex;gap:10px}
+  #nb .row .btn{margin-top:0}
 </style>
 </head>
 <body>
@@ -51,6 +58,8 @@
   <div class="card" id="card"><div class="spin"></div></div>
 </div>
 <iframe id="frame" title="Kartha" allow="clipboard-write; web-share; camera; microphone; autoplay"></iframe>
+<div id="nb"><b>🔔 Allow notifications?</b><p>Kartha tells you when someone is waiting for your answer, even when Kartha is closed.
+  Only chat names and counts show — never message text.</p><div class="row"><button class="btn pri" id="nbYes">Allow</button><button class="btn" id="nbNo">Not now</button></div></div>
 <div id="rec"><div class="sheet"><div><span class="dot"></span><b>Recording</b></div><div class="t" id="recT">0:00</div>
   <p class="small" id="recHint">Too noisy? Step away or type.</p>
   <button class="btn red" id="recStop">■ Stop and send</button><button class="btn" id="recCancel">Cancel</button></div></div>
@@ -77,6 +86,10 @@
   const params = new URLSearchParams(location.search);
   if (params.get('invite')) { try { sessionStorage.setItem('kartha.invite', params.get('invite')); } catch (e) {} history.replaceState(null, '', location.pathname); }
   const invite = () => { try { return sessionStorage.getItem('kartha.invite') || ''; } catch (e) { return ''; } };
+  /* a tapped notification opens Kartha at the right screen: ?open=<client>|<home|questions|chat:id> */
+  let openReq = String(params.get('open') || '');
+  if (openReq) history.replaceState(null, '', location.pathname);
+  let pushCfg = null;
 
   let idToken = '', current = null, adminChoice = null, reopenTries = 0;
 
@@ -104,6 +117,12 @@
         ls.set('kartha.session', r.session);
         try { sessionStorage.removeItem('kartha.invite'); } catch (e) {}
         adminChoice = r.admin ? { clientId: 'ADMIN', name: 'Kartha Admin', api: r.admin.api, ticket: r.admin.ticket } : null;
+        pushCfg = r.push || null;
+        if (openReq) {                                         // from a notification: that copy and that screen
+          const cid = openReq.split('|')[0];
+          const pick = cid === 'ADMIN' ? adminChoice : r.choices.find(c => c.clientId === cid);
+          if (pick) return openApp(pick, r.choices);
+        }
         if (current) {                                         // reopen the same copy after a refresh of the sign-in
           const same = current.clientId === 'ADMIN' ? adminChoice : r.choices.find(c => c.clientId === current.clientId);
           if (same) return openApp(Object.assign({}, current, { api: same.api, ticket: same.ticket }), r.choices);
@@ -164,9 +183,13 @@
       }
       reopenTries = 0;
       document.title = choice.clientId === 'ADMIN' ? 'KARTHA' : 'Kartha – ' + choice.name;
-      const boot = '<script>window.KARTHA_API=' + JSON.stringify(choice.api) + ';</scr' + 'ipt>';
+      const target = openReq && openReq.split('|')[0] === choice.clientId ? openReq.split('|').slice(1).join('|') : '';
+      openReq = '';
+      const boot = '<script>window.KARTHA_API=' + JSON.stringify(choice.api) + ';window.KARTHA_OPEN=' + JSON.stringify(target) + ';</scr' + 'ipt>';
       frame.srcdoc = /<head>/i.test(r.data) ? r.data.replace(/<head>/i, '<head>' + boot) : boot + r.data;
       document.body.classList.add('inapp');
+      clearShown(choice.clientId);
+      setTimeout(askPush, 1500);
     }).catch(() => show(`<h1>No connection</h1><p>Check the internet and try again.</p><button class="btn pri" id="again">Try again</button>`, bind('again', () => openApp(choice))));
   }
 
@@ -269,7 +292,51 @@
     document.body.appendChild(a); a.click(); a.remove();
   }
 
-  if ('serviceWorker' in navigator) navigator.serviceWorker.register('sw.js').catch(() => {});
+  if ('serviceWorker' in navigator) {
+    navigator.serviceWorker.register('sw.js').catch(() => {});
+    navigator.serviceWorker.addEventListener('message', e => { if (e.data && e.data.karthaOpen) goTo(String(e.data.karthaOpen)); });
+  }
+
+  /* Phone notifications: asked once; the phone's address goes to Kartha Admin (Firebase, Google's free push service). */
+  const FB = 'https://www.gstatic.com/firebasejs/10.12.2/';
+  function loadScript(src){ return new Promise((res, rej) => { const s = document.createElement('script'); s.src = src; s.onload = res; s.onerror = rej; document.head.appendChild(s); }); }
+  function pushReady(){ return !!(pushCfg && MOBILE && 'Notification' in window && 'serviceWorker' in navigator && window.PushManager); }
+  function askPush(){
+    if (!pushReady()) return;
+    if (Notification.permission === 'granted') return registerPush();
+    if (Notification.permission !== 'default' || ls.get('kartha.notifyAsked')) return;
+    const nb = document.getElementById('nb');
+    nb.classList.add('on');
+    document.getElementById('nbNo').onclick = () => { ls.set('kartha.notifyAsked', '1'); nb.classList.remove('on'); };
+    document.getElementById('nbYes').onclick = () => {
+      ls.set('kartha.notifyAsked', '1'); nb.classList.remove('on');
+      Notification.requestPermission().then(p => { if (p === 'granted') registerPush(); }).catch(() => {});
+    };
+  }
+  function registerPush(){
+    (window.firebase && firebase.messaging ? Promise.resolve() : loadScript(FB + 'firebase-app-compat.js').then(() => loadScript(FB + 'firebase-messaging-compat.js')))
+      .then(() => { if (!firebase.apps.length) firebase.initializeApp(pushCfg.config); return navigator.serviceWorker.ready; })
+      .then(reg => firebase.messaging().getToken({ vapidKey: pushCfg.vapidKey, serviceWorkerRegistration: reg }))
+      .then(token => {
+        if (!token || token === ls.get('kartha.pushTok')) return;
+        return router({ action: 'push', session: ls.get('kartha.session'), deviceId: device, mobile: MOBILE, token: token })
+          .then(r => { if (r && r.status === 'ok') ls.set('kartha.pushTok', token); });
+      }).catch(() => {});
+  }
+  /* opening Kartha clears its notifications: the counts are on the screen now */
+  function clearShown(cid){
+    if (!('serviceWorker' in navigator)) return;
+    navigator.serviceWorker.ready.then(reg => reg.getNotifications()).then(ns => ns.forEach(n => { if (String(n.tag).indexOf('kartha-' + cid + '-') === 0) n.close(); })).catch(() => {});
+  }
+  /* a notification tapped while Kartha is open */
+  function goTo(open){
+    const cid = open.split('|')[0], target = open.split('|').slice(1).join('|');
+    if (current && current.clientId === cid && document.body.classList.contains('inapp')) {
+      try { frame.contentWindow.postMessage({ karthaGo: target }, '*'); } catch (e) {}
+      return clearShown(cid);
+    }
+    openReq = open; route();
+  }
 
   /* start */
   if (!CFG.routerUrl) show('<h1>Kartha is not set up yet</h1><p>Please try again later.</p>');
