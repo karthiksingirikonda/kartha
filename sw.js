@@ -1,5 +1,5 @@
 /* Kartha front door: keeps the start page on the phone so the app opens fast and can be installed. */
-const CACHE = 'kartha-door-v1';
+const CACHE = 'kartha-door-v2';
 const FILES = ['./', './index.html', './config.js', './manifest.webmanifest', './kartha-icon.png'];
 self.addEventListener('install', e => { e.waitUntil(caches.open(CACHE).then(c => c.addAll(FILES)).then(() => self.skipWaiting())); });
 self.addEventListener('activate', e => {

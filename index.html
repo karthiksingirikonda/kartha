@@ -78,15 +78,18 @@
   if (params.get('invite')) { try { sessionStorage.setItem('kartha.invite', params.get('invite')); } catch (e) {} history.replaceState(null, '', location.pathname); }
   const invite = () => { try { return sessionStorage.getItem('kartha.invite') || ''; } catch (e) { return ''; } };
 
-  let idToken = '', current = null, adminUrl = '';
+  let idToken = '', current = null, adminChoice = null, reopenTries = 0;
 
   function show(html){ document.body.classList.remove('inapp'); card.innerHTML = html; }
   function busy(){ show('<div class="spin"></div>'); }
 
-  function router(body){
-    return fetch(CFG.routerUrl, { method: 'POST', headers: { 'Content-Type': 'text/plain;charset=utf-8' }, body: JSON.stringify(body) })
-      .then(r => r.json());
+  /* Every call to Kartha is a background call that sends no Google cookies. That is why Kartha works on phones
+     signed in to one or many Google accounts, exactly as in an Incognito tab. */
+  function post(url, body){
+    return fetch(url, { method: 'POST', credentials: 'omit', cache: 'no-store', redirect: 'follow',
+      headers: { 'Content-Type': 'text/plain;charset=utf-8' }, body: JSON.stringify(body) }).then(r => r.json());
   }
+  function router(body){ return post(CFG.routerUrl, body); }
   function route(extra){
     busy();
     const body = Object.assign({ action: 'route', deviceId: device, mobile: MOBILE, invite: invite() }, extra || {});
@@ -100,12 +103,12 @@
       case 'ok':
         ls.set('kartha.session', r.session);
         try { sessionStorage.removeItem('kartha.invite'); } catch (e) {}
-        adminUrl = r.admin ? r.admin.url : '';
+        adminChoice = r.admin ? { clientId: 'ADMIN', name: 'Kartha Admin', api: r.admin.api, ticket: r.admin.ticket } : null;
         if (current) {                                         // reopen the same copy after a refresh of the sign-in
-          const same = current.clientId === 'ADMIN' ? r.admin : r.choices.find(c => c.clientId === current.clientId);
-          if (same) return openApp(Object.assign({}, current, { url: same.url }), r.choices);
+          const same = current.clientId === 'ADMIN' ? adminChoice : r.choices.find(c => c.clientId === current.clientId);
+          if (same) return openApp(Object.assign({}, current, { api: same.api, ticket: same.ticket }), r.choices);
         }
-        if (r.admin) return openApp({ clientId: 'ADMIN', url: r.admin.url, name: 'Kartha Admin' }, r.choices);
+        if (adminChoice) return openApp(adminChoice, r.choices);
         if (r.choices.length === 1) return openApp(r.choices[0], r.choices);
         if (r.choices.length > 1) return picker(r.choices);
         return show(`<h1>Almost there</h1><p>${r.note ? 'Request sent: ' + esc(r.note.label) + '. ' : ''}You can open Kartha once your company admin approves you.</p>
@@ -148,11 +151,23 @@
     show(`<h1>Open</h1><div class="pick">${choices.map((c, i) => `<button data-i="${i}"><span>🏢</span>Kartha – ${esc(c.name)}</button>`).join('')}</div>`);
     card.querySelector('.pick').onclick = e => { const b = e.target.closest('[data-i]'); if (b) openApp(choices[Number(b.dataset.i)], choices); };
   }
+  /* The screen comes as text from a background call and is shown inside this page, never from script.google.com,
+     so no Google sign-in page or Google line can appear. */
   function openApp(choice, all){
     current = choice;
-    document.title = choice.clientId === 'ADMIN' ? 'KARTHA' : 'Kartha – ' + choice.name;
-    frame.src = choice.url;
-    document.body.classList.add('inapp');
+    busy();
+    post(choice.api, { action: 'page', t: choice.ticket, m: MOBILE }).then(r => {
+      if (!r || !r.ok) {
+        if (/SESSION_ENDED/.test(r && r.error) && reopenTries++ < 2) return route();
+        return show(`<h1>Kartha could not open</h1><p>${esc((r && r.error || '').replace(/KARTHA:\w+/, '') || 'Please try again.')}</p>
+          <button class="btn pri" id="again">Try again</button>`, bind('again', () => route()));
+      }
+      reopenTries = 0;
+      document.title = choice.clientId === 'ADMIN' ? 'KARTHA' : 'Kartha – ' + choice.name;
+      const boot = '<script>window.KARTHA_API=' + JSON.stringify(choice.api) + ';</scr' + 'ipt>';
+      frame.srcdoc = /<head>/i.test(r.data) ? r.data.replace(/<head>/i, '<head>' + boot) : boot + r.data;
+      document.body.classList.add('inapp');
+    }).catch(() => show(`<h1>No connection</h1><p>Check the internet and try again.</p><button class="btn pri" id="again">Try again</button>`, bind('again', () => openApp(choice))));
   }
 
   /* Google sign-in (Gmail) */
@@ -184,20 +199,20 @@
   }
 
   /* messages from the app inside: share, download, reopen, admin */
-  const fromApp = o => /\.googleusercontent\.com$/.test(new URL(o).hostname) || /(^|\.)script\.google\.com$/.test(new URL(o).hostname);
+  const isApi = u => typeof u === 'string' && /^https:\/\/script\.google\.com\/(a\/macros\/[^/]+|macros)\/s\/[\w-]+\/exec$/.test(u);
   window.addEventListener('message', e => {
     const m = e.data;
-    if (!m || !m.kartha) return;
-    try { if (!fromApp(e.origin)) return; } catch (x) { return; }
-    if (m.type === 'hello') return e.source.postMessage({ karthaHost: 1 }, e.origin);
+    if (!m || !m.kartha || e.source !== frame.contentWindow) return;     // only the screen shown inside this page
+    const to = e.origin && e.origin !== 'null' ? e.origin : '*';
+    if (m.type === 'hello') return e.source.postMessage({ karthaHost: 1 }, to);
     if (m.type === 'share') return share(m);
     if (m.type === 'download' && m.file) return save(m.file);
-    if (m.type === 'record') return record(e.source, e.origin, m);
+    if (m.type === 'record') return record(e.source, to, m);
     if (m.type === 'reauth') return route();
     if (m.type === 'signin') { ls.del('kartha.session'); return signIn(); }
-    if (m.type === 'admin') { return adminUrl ? openApp({ clientId: 'ADMIN', url: adminUrl, name: 'Kartha Admin' }) : route(); }
-    if (m.type === 'go' && typeof m.url === 'string' && m.url.indexOf('https://script.google.com/macros/s/') === 0) {
-      return openApp({ clientId: m.clientId || 'CLIENT', url: m.url, name: m.name || 'Kartha' });
+    if (m.type === 'admin') { return adminChoice ? openApp(adminChoice) : route(); }
+    if (m.type === 'go' && isApi(m.api) && typeof m.ticket === 'string') {
+      return openApp({ clientId: m.clientId || 'CLIENT', api: m.api, ticket: m.ticket, name: m.name || 'Kartha' });
     }
   });
   /* The KARTHA recorder: used when the phone does not allow the microphone inside the app itself. */
