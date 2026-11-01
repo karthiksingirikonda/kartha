@@ -1,6 +1,6 @@
 /* Kartha front door: keeps the start page on the phone so the app opens fast and can be installed. */
-const CACHE = 'kartha-door-v3';
-const FILES = ['./', './index.html', './config.js', './manifest.webmanifest', './kartha-icon.png'];
+const CACHE = 'kartha-door-v5';
+const FILES = ['./', './index.html', './config.js', './manifest.webmanifest', './kartha-icon.png', './icon-192.png', './icon-512.png', './icon-maskable-512.png'];
 self.addEventListener('install', e => { e.waitUntil(caches.open(CACHE).then(c => c.addAll(FILES)).then(() => self.skipWaiting())); });
 self.addEventListener('activate', e => {
   e.waitUntil(caches.keys().then(keys => Promise.all(keys.filter(k => k !== CACHE).map(k => caches.delete(k)))).then(() => self.clients.claim()));
@@ -22,9 +22,9 @@ self.addEventListener('push', e => {
     e.waitUntil(self.registration.getNotifications({ tag: d.tag }).then(ns => ns.forEach(n => n.close())));
     return;
   }
-  e.waitUntil(self.registration.showNotification(d.title || 'Kartha', {
+  e.waitUntil(Promise.all([self.registration.showNotification(d.title || 'Kartha', {
     body: d.body || '', tag: d.tag, renotify: true, icon: 'kartha-icon.png', badge: 'kartha-icon.png', data: { open: d.open || '' }
-  }));
+  }), self.clients.matchAll({ type: 'window', includeUncontrolled: true }).then(list => list.forEach(c => c.postMessage({ karthaPush: 1 })))]));
 });
 self.addEventListener('notificationclick', e => {
   e.notification.close();

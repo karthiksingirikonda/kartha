@@ -10,7 +10,7 @@
 <title>KARTHA</title>
 <link rel="manifest" href="manifest.webmanifest">
 <link rel="icon" href="kartha-icon.png">
-<link rel="apple-touch-icon" href="kartha-icon.png">
+<link rel="apple-touch-icon" href="icon-192.png">
 <script src="config.js"></script>
 <style>
   :root{--bg:#F4F6FB;--ink:#202124;--ink2:#5F6368;--blue:#1A73E8;--line:#E3E7EE}
@@ -58,8 +58,8 @@
   <div class="card" id="card"><div class="spin"></div></div>
 </div>
 <iframe id="frame" title="Kartha" allow="clipboard-write; web-share; camera; microphone; autoplay"></iframe>
-<div id="nb"><b>🔔 Allow notifications?</b><p>Kartha tells you when someone is waiting for your answer, even when Kartha is closed.
-  Only chat names and counts show — never message text.</p><div class="row"><button class="btn pri" id="nbYes">Allow</button><button class="btn" id="nbNo">Not now</button></div></div>
+<div id="nb"><b>🔔 Notifications</b><p id="nbText">Kartha can tell you when someone is waiting for your answer, even when Kartha is closed.
+  Only chat names and counts show — never message text.</p><div class="row" id="nbRow"><button class="btn pri" id="nbYes">Turn on notifications</button><button class="btn" id="nbNo">Not now</button></div></div>
 <div id="rec"><div class="sheet"><div><span class="dot"></span><b>Recording</b></div><div class="t" id="recT">0:00</div>
   <p class="small" id="recHint">Too noisy? Step away or type.</p>
   <button class="btn red" id="recStop">■ Stop and send</button><button class="btn" id="recCancel">Cancel</button></div></div>
@@ -91,6 +91,25 @@
   if (openReq) history.replaceState(null, '', location.pathname);
   let pushCfg = null;
 
+  /* The phone's own copy (IndexedDB, shared with the app screen): the last screen of each copy opens at once next time,
+     and messages sent without signal wait there. Everything is cleared when the person signs out. */
+  function db(){
+    return new Promise((res, rej) => {
+      try {
+        const rq = indexedDB.open('kartha', 1);
+        rq.onupgradeneeded = () => { const d = rq.result; if (!d.objectStoreNames.contains('outbox')) d.createObjectStore('outbox'); if (!d.objectStoreNames.contains('snap')) d.createObjectStore('snap'); };
+        rq.onsuccess = () => res(rq.result); rq.onerror = () => rej(rq.error);
+      } catch (e) { rej(e); }
+    });
+  }
+  function dbDo(store, mode, fn){
+    return db().then(d => new Promise(res => { const t = d.transaction(store, mode); const r = fn(t.objectStore(store));
+      t.oncomplete = () => { d.close(); res(r && r.result); }; t.onerror = () => { d.close(); res(undefined); }; })).catch(() => undefined);
+  }
+  const pageGet = cid => dbDo('snap', 'readonly', st => st.get('page|' + cid));
+  const pagePut = (cid, v) => dbDo('snap', 'readwrite', st => st.put(v, 'page|' + cid));
+  function clearLocal(){ ls.del('kartha.lastClient'); return dbDo('outbox', 'readwrite', st => st.clear()).then(() => dbDo('snap', 'readwrite', st => st.clear())); }
+
   let idToken = '', current = null, adminChoice = null, reopenTries = 0;
 
   function show(html){ document.body.classList.remove('inapp'); card.innerHTML = html; }
@@ -104,10 +123,39 @@
   }
   function router(body){ return post(CFG.routerUrl, body); }
   function route(extra){
+    if (fromCopy) return routeQuiet(extra);
     busy();
     const body = Object.assign({ action: 'route', deviceId: device, mobile: MOBILE, invite: invite() }, extra || {});
     if (!body.idToken) { const s = ls.get('kartha.session'); if (s) body.session = s; }
     return router(body).then(handle).catch(() => show(`<h1>No connection</h1><p>Check the internet and try again.</p><button class="btn pri" id="again">Try again</button>`, bind('again', () => route())));
+  }
+  /* Opening from the phone's copy: sign-in is checked in the background; no blank wait. */
+  let fromCopy = false;
+  function routeQuiet(extra){
+    const body = Object.assign({ action: 'route', deviceId: device, mobile: MOBILE, invite: invite() }, extra || {});
+    const s = ls.get('kartha.session'); if (s) body.session = s;
+    return router(body).then(r => {
+      if (r && r.status === 'ok') return handle(r);
+      fromCopy = false; return handle(r || {});
+    }).catch(() => { try { frame.contentWindow.postMessage({ karthaOffline: true }, '*'); } catch (e) {} });
+  }
+  function showCopy(cid){
+    return pageGet(cid).then(p => {
+      if (!p || !p.html) return false;
+      current = { clientId: cid, api: p.api, name: p.name, ticket: '' };
+      document.title = 'Kartha – ' + p.name;
+      const target = openReq && openReq.split('|')[0] === cid ? openReq.split('|').slice(1).join('|') : '';
+      const boot = '<script>window.KARTHA_API=' + JSON.stringify(p.api) + ';window.KARTHA_OPEN=' + JSON.stringify(target) + ';window.KARTHA_CACHED=true;</scr' + 'ipt>';
+      frame.srcdoc = /<head>/i.test(p.html) ? p.html.replace(/<head>/i, '<head>' + boot) : boot + p.html;
+      document.body.classList.add('inapp');
+      fromCopy = true;
+      if (target) openReq = '';
+      return true;
+    });
+  }
+  /* the latest screen is fetched quietly for next time */
+  function refreshCopy(choice){
+    post(choice.api, { action: 'page', t: choice.ticket, m: MOBILE }).then(r => { if (r && r.ok) pagePut(choice.clientId, { html: r.data, api: choice.api, name: choice.name, time: Date.now() }); }).catch(() => {});
   }
   function bind(id, fn){ setTimeout(() => { const b = document.getElementById(id); if (b) b.onclick = fn; }, 0); }
 
@@ -118,6 +166,17 @@
         try { sessionStorage.removeItem('kartha.invite'); } catch (e) {}
         adminChoice = r.admin ? { clientId: 'ADMIN', name: 'Kartha Admin', api: r.admin.api, ticket: r.admin.ticket } : null;
         pushCfg = r.push || null;
+        if (fromCopy && current) {                             // the screen is already showing from the phone's copy
+          const same = current.clientId === 'ADMIN' ? adminChoice : r.choices.find(c => c.clientId === current.clientId);
+          fromCopy = false;
+          if (same && !openReq) {
+            current = Object.assign({}, current, { api: same.api, ticket: same.ticket });
+            try { frame.contentWindow.postMessage({ karthaTicket: same.ticket }, '*'); } catch (e) {}
+            refreshCopy(current);
+            setTimeout(askPush, 1500);
+            return;
+          }
+        }
         if (openReq) {                                         // from a notification: that copy and that screen
           const cid = openReq.split('|')[0];
           const pick = cid === 'ADMIN' ? adminChoice : r.choices.find(c => c.clientId === cid);
@@ -137,7 +196,7 @@
           <button class="btn pri" id="yes">Yes, use it here</button><button class="btn" id="no">No</button>`,
           bind('yes', () => route(idToken ? { idToken, takeover: true } : { takeover: true })), bind('no', () => show('<h1>OK</h1><p>Kartha stays on your other phone.</p>')));
       case 'replaced':
-        ls.del('kartha.session');
+        ls.del('kartha.session'); clearLocal();
         return signIn('This account is now active on another phone. Sign in to use it here.');
       case 'requested':
         return show(`<h1>✅ Request sent</h1><p><b>${esc(r.label)}</b></p><p>You can open Kartha once your company admin approves you.</p>
@@ -149,7 +208,7 @@
         return show(`<h1>⏳ Waiting for approval</h1><p>Your request is with your company admin.</p><button class="btn pri" id="again">Check again</button>`,
           bind('again', () => route(idToken ? { idToken } : {})));
       case 'noaccess':
-        ls.del('kartha.session');
+        ls.del('kartha.session'); clearLocal();
         return show(`<h1>No access yet</h1><p>Ask your company admin for an invite link, then open it on this phone.</p>
           <p class="small">Signed in as ${esc(r.email || '')}</p><button class="btn" id="other">Use another Google account</button>`, bind('other', () => signIn()));
       case 'badinvite':
@@ -159,7 +218,7 @@
         ls.del('kartha.session');
         return desktop();
       case 'signin':
-        ls.del('kartha.session');
+        ls.del('kartha.session'); clearLocal();
         return signIn();
       default:
         return show(`<h1>Something went wrong</h1><p>${esc(r.message || 'Please try again.')}</p><button class="btn pri" id="again">Try again</button>`, bind('again', () => route()));
@@ -188,6 +247,7 @@
       const boot = '<script>window.KARTHA_API=' + JSON.stringify(choice.api) + ';window.KARTHA_OPEN=' + JSON.stringify(target) + ';</scr' + 'ipt>';
       frame.srcdoc = /<head>/i.test(r.data) ? r.data.replace(/<head>/i, '<head>' + boot) : boot + r.data;
       document.body.classList.add('inapp');
+      if (choice.clientId !== 'ADMIN') { ls.set('kartha.lastClient', choice.clientId); pagePut(choice.clientId, { html: r.data, api: choice.api, name: choice.name, time: Date.now() }); }
       clearShown(choice.clientId);
       setTimeout(askPush, 1500);
     }).catch(() => show(`<h1>No connection</h1><p>Check the internet and try again.</p><button class="btn pri" id="again">Try again</button>`, bind('again', () => openApp(choice))));
@@ -232,7 +292,7 @@
     if (m.type === 'download' && m.file) return save(m.file);
     if (m.type === 'record') return record(e.source, to, m);
     if (m.type === 'reauth') return route();
-    if (m.type === 'signin') { ls.del('kartha.session'); return signIn(); }
+    if (m.type === 'signin') { ls.del('kartha.session'); clearLocal(); return signIn(); }
     if (m.type === 'admin') { return adminChoice ? openApp(adminChoice) : route(); }
     if (m.type === 'go' && isApi(m.api) && typeof m.ticket === 'string') {
       return openApp({ clientId: m.clientId || 'CLIENT', api: m.api, ticket: m.ticket, name: m.name || 'Kartha' });
@@ -294,15 +354,31 @@
 
   if ('serviceWorker' in navigator) {
     navigator.serviceWorker.register('sw.js').catch(() => {});
-    navigator.serviceWorker.addEventListener('message', e => { if (e.data && e.data.karthaOpen) goTo(String(e.data.karthaOpen)); });
+    navigator.serviceWorker.addEventListener('message', e => {
+      if (e.data && e.data.karthaOpen) goTo(String(e.data.karthaOpen));
+      if (e.data && e.data.karthaPush) { try { frame.contentWindow.postMessage({ karthaRefresh: 1 }, '*'); } catch (err) {} }   // news: fetch it now
+    });
   }
 
   /* Phone notifications: asked once; the phone's address goes to Kartha Admin (Firebase, Google's free push service). */
   const FB = 'https://www.gstatic.com/firebasejs/10.12.2/';
   function loadScript(src){ return new Promise((res, rej) => { const s = document.createElement('script'); s.src = src; s.onload = res; s.onerror = rej; document.head.appendChild(s); }); }
   function pushReady(){ return !!(pushCfg && MOBILE && 'Notification' in window && 'serviceWorker' in navigator && window.PushManager); }
+  /* iPhone: notifications only from iOS 16.4 and only after "Add to Home Screen"; a one-line hint, never an error */
+  const IOS = /iPhone|iPad|iPod/i.test(navigator.userAgent);
+  const STANDALONE = (window.matchMedia && window.matchMedia('(display-mode: standalone)').matches) || navigator.standalone === true;
+  function iosHint(){
+    if (!IOS || STANDALONE || ls.get('kartha.iosHint')) return;
+    ls.set('kartha.iosHint', '1');
+    const nb = document.getElementById('nb');
+    document.getElementById('nbText').textContent = 'On iPhone (iOS 16.4 or later), notifications work after Share → Add to Home Screen.';
+    document.getElementById('nbRow').innerHTML = '<button class="btn" id="nbNo">OK</button>';
+    nb.classList.add('on');
+    document.getElementById('nbNo').onclick = () => nb.classList.remove('on');
+  }
+  /* The phone's own permission question appears only after the person taps "Turn on notifications". */
   function askPush(){
-    if (!pushReady()) return;
+    try { if (!pushReady()) return iosHint(); } catch (e) { return; }
     if (Notification.permission === 'granted') return registerPush();
     if (Notification.permission !== 'default' || ls.get('kartha.notifyAsked')) return;
     const nb = document.getElementById('nb');
@@ -338,8 +414,12 @@
     openReq = open; route();
   }
 
-  /* start */
+  /* start: with a session, the last copy shows at once while sign-in is checked in the background */
+  const lastClient = ls.get('kartha.lastClient');
   if (!CFG.routerUrl) show('<h1>Kartha is not set up yet</h1><p>Please try again later.</p>');
+  else if (ls.get('kartha.session') && MOBILE && lastClient && (!openReq || openReq.split('|')[0] === lastClient)) {
+    showCopy(lastClient).then(ok => route());
+  }
   else if (ls.get('kartha.session')) route();
   else if (!MOBILE) desktop();
   else signIn();
